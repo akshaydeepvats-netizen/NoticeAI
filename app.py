@@ -179,6 +179,11 @@ NAV_ITEMS = ["⌂  Home", "⌕  Analyze Notice", "◷  History", "☆  Saved Res
 def navigate_to(item):
     st.session_state["active_page"] = item
 
+def go_to_analyze():
+    # Streamlit executes callbacks before recreating widgets, avoiding
+    # StreamlitWidgetAlreadyInstantiatedError for the navigation radio.
+    st.session_state["active_page"] = "⌕  Analyze Notice"
+
 def clear_analysis():
     st.session_state["analysis"] = None
     st.session_state["source_text"] = ""
@@ -244,9 +249,8 @@ if page == "⌂  Home":
 
     st.write("")
     st.write("")
-    if st.button("⚡ Analyze a notice", type="primary", use_container_width=True):
-        st.session_state["active_page"] = "⌕  Analyze Notice"
-        st.rerun()
+    st.button("⚡ Analyze a notice", type="primary", use_container_width=True,
+              on_click=go_to_analyze)
 
 if page == "⌕  Analyze Notice":
     left, right = st.columns([1.25, .75], gap="large")
@@ -385,19 +389,20 @@ if page == "◷  History":
     st.caption("Recent analyses from this browser session. History clears when the Streamlit session resets.")
     if not st.session_state.history:
         st.info("No analyses yet. Open Analyze Notice and run your first analysis.")
-        if st.button("Go to Analyze Notice", type="primary"):
-            st.session_state.active_page = "⌕  Analyze Notice"; st.rerun()
+        st.button("Go to Analyze Notice", type="primary", on_click=go_to_analyze)
     else:
         for i, item in enumerate(st.session_state.history):
             with st.expander(f"{item.get('created_at','Unknown time')} · {str(item.get('source_text',''))[:70].replace(chr(10),' ')}"):
                 result = item.get("analysis", {})
                 st.write(result.get("summary", "No summary available."))
                 st.caption(f"Language: {item.get('language','—')} · Model: {item.get('model','—')}")
-                if st.button("Open this result", key=f"history_open_{i}"):
-                    st.session_state.analysis = result
-                    st.session_state.source_text = item.get("source_text", "")
-                    st.session_state.pasted_text = item.get("source_text", "")
-                    st.session_state.active_page = "⌕  Analyze Notice"; st.rerun()
+                def open_history_result(saved_item=item):
+                    st.session_state.analysis = saved_item.get("analysis", {})
+                    st.session_state.source_text = saved_item.get("source_text", "")
+                    st.session_state.pasted_text = saved_item.get("source_text", "")
+                    st.session_state.active_page = "⌕  Analyze Notice"
+                st.button("Open this result", key=f"history_open_{i}",
+                          on_click=open_history_result)
                 st.download_button("Export JSON", data=json.dumps(item, ensure_ascii=False, indent=2), file_name=f"noticeai_history_{i+1}.json", mime="application/json", key=f"history_export_{i}")
 
 if page == "☆  Saved Results":
@@ -406,8 +411,7 @@ if page == "☆  Saved Results":
     st.caption("Saved results are kept for this active session; export important results to keep a copy.")
     if not st.session_state.saved_results:
         st.info("Nothing saved yet. Analyze a notice, then choose ‘Save this result’.")
-        if st.button("Analyze a notice", type="primary"):
-            st.session_state.active_page = "⌕  Analyze Notice"; st.rerun()
+        st.button("Analyze a notice", type="primary", on_click=go_to_analyze)
     else:
         for i, item in enumerate(st.session_state.saved_results):
             with st.expander(f"☆ {item.get('created_at','Saved')} · {str(item.get('source_text',''))[:70].replace(chr(10),' ')}", expanded=False):
@@ -415,11 +419,13 @@ if page == "☆  Saved Results":
                 st.caption(f"Language: {item.get('language','—')} · Model: {item.get('model','—')}")
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button("Open result", key=f"saved_open_{i}", use_container_width=True):
-                        st.session_state.analysis = item.get("analysis")
-                        st.session_state.source_text = item.get("source_text", "")
-                        st.session_state.pasted_text = item.get("source_text", "")
-                        st.session_state.active_page = "⌕  Analyze Notice"; st.rerun()
+                    def open_saved_result(saved_item=item):
+                        st.session_state.analysis = saved_item.get("analysis")
+                        st.session_state.source_text = saved_item.get("source_text", "")
+                        st.session_state.pasted_text = saved_item.get("source_text", "")
+                        st.session_state.active_page = "⌕  Analyze Notice"
+                    st.button("Open result", key=f"saved_open_{i}", use_container_width=True,
+                              on_click=open_saved_result)
                 with c2:
                     if st.button("Remove saved item", key=f"saved_remove_{i}", use_container_width=True):
                         st.session_state.saved_results.pop(i); st.rerun()
