@@ -47,3 +47,15 @@ You can deploy the Streamlit interface on a Streamlit-compatible hosting service
 - History and Saved Results are session-only and may clear when the session restarts. Export important results as JSON.
 - Evidence checks confirm whether a quoted string appears in the extracted notice text; this does not guarantee the interpretation is correct. Verify important dates and requirements against the original notice.
 - Never upload private or sensitive documents to a public demo without permission.
+
+
+## Deploying with Ollama Cloud on Streamlit Community Cloud
+
+The local `http://localhost:11434` endpoint works only when running the app on a computer that has Ollama installed. For Streamlit Community Cloud, configure the Ollama Cloud API key in the app's **Manage app → Settings → Secrets** panel (never commit the key to GitHub):
+
+```toml
+OLLAMA_API_KEY = "paste-your-Ollama-API-key-here"
+OLLAMA_CLOUD_MODEL = "gemma4:31b"
+```
+
+The app will use `https://ollama.com/api/chat` when `OLLAMA_API_KEY` is present, and keep using local Ollama otherwise. Check Ollama's current cloud model availability and your account's access before choosing `OLLAMA_CLOUD_MODEL`. Cloud inference sends notice text to Ollama Cloud, so do not submit sensitive personal information.

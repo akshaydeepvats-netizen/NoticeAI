@@ -1,4 +1,4 @@
-import io, json, re, time, unicodedata
+import io, json, re, time, unicodedata, os
 from typing import Any
 import requests
 import streamlit as st
@@ -7,8 +7,23 @@ from PIL import Image
 import pytesseract
 
 st.set_page_config(page_title="NoticeAI • Intelligence Hub", page_icon="🧠", layout="wide", initial_sidebar_state="expanded")
-OLLAMA_URL = "http://localhost:11434/api/chat"
+LOCAL_OLLAMA_URL = "http://localhost:11434/api/chat"
+CLOUD_OLLAMA_URL = "https://ollama.com/api/chat"
 DEFAULT_MODEL = "gemma4:e2b"
+CLOUD_DEFAULT_MODEL = "gemma4:31b"
+
+def cloud_api_key():
+    try:
+        return str(st.secrets.get("OLLAMA_API_KEY", "")).strip()
+    except Exception:
+        return os.environ.get("OLLAMA_API_KEY", "").strip()
+
+def cloud_model_name(fallback: str) -> str:
+    try:
+        return str(st.secrets.get("OLLAMA_CLOUD_MODEL", CLOUD_DEFAULT_MODEL)).strip() or CLOUD_DEFAULT_MODEL
+    except Exception:
+        return os.environ.get("OLLAMA_CLOUD_MODEL", CLOUD_DEFAULT_MODEL).strip() or CLOUD_DEFAULT_MODEL
+
 SAMPLE_NOTICE = """SCHOLARSHIP APPLICATION NOTICE
 Eligible: Students enrolled in the first year of an undergraduate programme.
 Last date: 30 November 2026.
@@ -67,38 +82,52 @@ def extract_upload(uploaded_file) -> str:
     return ""
 
 def call_gemma(model: str, system_prompt: str, user_prompt: str) -> str:
-    # Try a compact JSON chat request first; retry once if Ollama returns empty content.
+    """Use Ollama Cloud on Streamlit Cloud when an API key is configured; otherwise use local Ollama."""
+    api_key = cloud_api_key()
+    is_cloud = bool(api_key)
+    endpoint = CLOUD_OLLAMA_URL if is_cloud else LOCAL_OLLAMA_URL
+    selected_model = cloud_model_name(model) if is_cloud else model
+    headers = {"Authorization": f"Bearer {api_key}"} if is_cloud else {}
     base_messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-    attempts = [
-        {"model": model, "stream": False, "think": False, "keep_alive": "10m", "messages": base_messages,
-         "format": "json", "options": {"temperature": 0.1, "num_predict": 512, "num_ctx": 4096}},
-        {"model": model, "stream": False, "think": False, "keep_alive": "10m",
-         "messages": [{"role": "user", "content": system_prompt + "\n\n" + user_prompt}],
-         "format": "json", "options": {"temperature": 0.1, "num_predict": 512, "num_ctx": 4096}},
-    ]
+    common = {"model": selected_model, "stream": False, "messages": base_messages,
+              "format": "json", "options": {"temperature": 0.1, "num_predict": 512}}
+    if not is_cloud:
+        common.update({"think": False, "keep_alive": "10m"})
+        common["options"]["num_ctx"] = 4096
+    attempts = [common]
+    retry = dict(common)
+    retry["messages"] = [{"role": "user", "content": system_prompt + "\n\n" + user_prompt}]
+    attempts.append(retry)
     try:
         last_detail = ""
         for payload in attempts:
-            response = requests.post(OLLAMA_URL, json=payload, timeout=(5, 300))
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=(10, 300))
+            if response.status_code == 401 or response.status_code == 403:
+                raise RuntimeError("Ollama Cloud authentication failed. Check OLLAMA_API_KEY in Streamlit app Secrets.")
+            if response.status_code == 404 and is_cloud:
+                raise RuntimeError(f"Ollama Cloud model '{selected_model}' was not found. Set OLLAMA_CLOUD_MODEL to a model available to your Ollama account in Streamlit Secrets.")
             response.raise_for_status()
             body = response.json()
             content = (body.get("message") or {}).get("content", "")
+            if not content and isinstance(body.get("choices"), list) and body["choices"]:
+                content = (body["choices"][0].get("message") or {}).get("content", "")
             if isinstance(content, str) and content.strip():
                 return content.strip()
             last_detail = f"empty message content; done={body.get('done')!r}, done_reason={body.get('done_reason')!r}"
-        raise RuntimeError(
-            "Ollama returned an empty answer twice. The model connection works, but it did not produce text for this request. "
-            "Try a shorter notice or run `ollama run gemma4:e2b \"Say Hello\"` in Command Prompt. " + last_detail
-        )
+        service = "Ollama Cloud" if is_cloud else "Ollama"
+        raise RuntimeError(f"{service} returned an empty answer twice. Try a shorter notice. {last_detail}")
     except requests.exceptions.ConnectionError as exc:
-        raise RuntimeError("Cannot connect to Ollama. Make sure Ollama is running, then retry.") from exc
+        if is_cloud:
+            raise RuntimeError("Cannot reach Ollama Cloud. Check the Streamlit Cloud network/status and try again.") from exc
+        raise RuntimeError("Cannot connect to local Ollama. For a deployed app, add OLLAMA_API_KEY in Streamlit app Secrets to use Ollama Cloud.") from exc
     except requests.exceptions.Timeout as exc:
         raise RuntimeError("NoticeAI waited 5 minutes without a complete reply. Try a shorter notice and retry.") from exc
     except requests.RequestException as exc:
-        raise RuntimeError(f"Ollama request failed: {getattr(exc.response, 'text', str(exc))}") from exc
+        detail = getattr(exc.response, "text", str(exc))
+        raise RuntimeError(f"Ollama request failed: {detail}") from exc
 
 def parse_json(text: str) -> dict:
     try: return json.loads(text)
@@ -163,9 +192,9 @@ with st.sidebar:
     language = st.radio("Output language", ["English", "Hindi"], horizontal=True)
     st.markdown('<div class="brain-sidebar">🧠<div class="eyebrow">NOTICE INTELLIGENCE</div><p>Local-first. Private by design.</p></div>', unsafe_allow_html=True)
     st.divider()
-    st.markdown('<span class="live-dot"></span> LOCAL AI • OLLAMA', unsafe_allow_html=True)
+    st.markdown('<span class="live-dot"></span> ' + ('CLOUD AI • OLLAMA' if cloud_api_key() else 'LOCAL AI • OLLAMA'), unsafe_allow_html=True)
     st.caption("Evidence quotes are checked against the extracted notice text.")
-    st.caption("For image OCR, Tesseract OCR must also be installed on Windows.")
+    st.caption("For deployed AI analysis, configure OLLAMA_API_KEY in Streamlit Secrets. For image OCR, Tesseract OCR must also be installed on Windows.")
     if st.button("Reset results", use_container_width=True, on_click=clear_analysis):
         pass
 
@@ -403,20 +432,36 @@ if page == "⚙  Settings":
     st.markdown('<div class="panel"><div class="eyebrow">CURRENT CONFIGURATION</div>', unsafe_allow_html=True)
     st.write(f"**Ollama model:** `{model_name.strip() or DEFAULT_MODEL}`")
     st.write(f"**Output language:** {language}")
-    st.write("**Endpoint:** `http://localhost:11434/api/chat`")
-    st.caption("This app uses your local Ollama service. A hosted public link cannot reach Ollama running on your own computer unless you configure a separate accessible backend.")
-    if st.button("Test Ollama connection", type="primary"):
-        try:
-            response = requests.get("http://localhost:11434/api/tags", timeout=5)
-            response.raise_for_status()
-            models = [x.get("name", "") for x in response.json().get("models", [])]
-            st.success("Ollama is reachable on this computer.")
-            if models:
-                st.write("Installed models:", ", ".join(models))
-            else:
-                st.info("Ollama responded, but no installed models were listed.")
-        except Exception as exc:
-            st.error(f"Ollama connection test failed: {exc}")
+    if cloud_api_key():
+        active_cloud_model = cloud_model_name(model_name.strip() or DEFAULT_MODEL)
+        st.write("**Backend:** `Ollama Cloud`")
+        st.write(f"**Cloud model:** `{active_cloud_model}`")
+        st.write("**Endpoint:** `https://ollama.com/api/chat`")
+        st.caption("Cloud inference sends the notice text to Ollama Cloud. Avoid uploading sensitive personal information.")
+        if st.button("Test Ollama Cloud connection", type="primary"):
+            try:
+                response = requests.post(CLOUD_OLLAMA_URL, headers={"Authorization": f"Bearer {cloud_api_key()}"},
+                    json={"model": active_cloud_model, "stream": False,
+                          "messages": [{"role": "user", "content": "Reply with the single word READY."}]}, timeout=(10, 90))
+                response.raise_for_status()
+                st.success("Ollama Cloud responded successfully.")
+                st.caption("Model response received; run a sample notice to test structured analysis.")
+            except Exception as exc:
+                st.error(f"Ollama Cloud connection test failed: {exc}")
+    else:
+        st.write("**Backend:** `Local Ollama` (for local development only)")
+        st.write("**Endpoint:** `http://localhost:11434/api/chat`")
+        st.caption("Streamlit Cloud cannot reach Ollama running on your laptop. Add OLLAMA_API_KEY under the app's Settings → Secrets to enable Ollama Cloud.")
+        if st.button("Test local Ollama connection", type="primary"):
+            try:
+                response = requests.get("http://localhost:11434/api/tags", timeout=5)
+                response.raise_for_status()
+                models = [x.get("name", "") for x in response.json().get("models", [])]
+                st.success("Local Ollama is reachable.")
+                if models: st.write("Installed models:", ", ".join(models))
+                else: st.info("Ollama responded, but no installed models were listed.")
+            except Exception as exc:
+                st.error(f"Local Ollama connection test failed: {exc}")
     st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown("<hr><div style='display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;color:#8294b6;font-size:.75rem;letter-spacing:.06em'><span>NOTICEAI NEXUS · LOCAL-FIRST INTELLIGENCE</span><span>VERIFY BEFORE YOU ACT · AI CAN MAKE MISTAKES</span></div>",unsafe_allow_html=True)
